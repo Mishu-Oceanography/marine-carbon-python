@@ -3,65 +3,113 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --------------------------------------------------
-# 1. Load Excel file
+# 1. LOAD DATA
 # --------------------------------------------------
-file = r"E:\DATASETS\RAMA DATA\RAMA_PCO2CSV\ramapCO2_dec14-jun15.xls"
+file = r"E:\DATASETS\RAMA DATA\RAMA_PCO2CSV\rama13-21.xls"
 df = pd.read_excel(file)
 
-# --------------------------------------------------
-# 2. Clean column names
-# --------------------------------------------------
+# Clean column names
 df.columns = df.columns.str.strip()
 
-# --------------------------------------------------
-# 3. Convert Date column to datetime
-# --------------------------------------------------
-df['Date'] = pd.to_datetime(df['Date [MM/DD/YYYY]'])
+# Convert Date column
+df['Date'] = pd.to_datetime(df['Date [MM/DD/YYYY]'], errors='coerce')
+
+# Keep only required columns
+df = df[['Date',
+         'pCO2_Air_sat [uatm]',
+         'pCO2_SW_sat [uatm]']]
+
+# Rename for simplicity
+df.rename(columns={
+    'pCO2_Air_sat [uatm]': 'Air_pCO2',
+    'pCO2_SW_sat [uatm]': 'Sea_pCO2'
+}, inplace=True)
+
+# Drop missing dates
+df = df.dropna(subset=['Date'])
 
 # --------------------------------------------------
-# 4. Clean pCO2 columns
+# 2. REMOVE PHYSICALLY IMPOSSIBLE + UNREALISTIC VALUES
 # --------------------------------------------------
-for col in ['pCO2_SW_sat [uatm]', 'pCO2_Air_sat [uatm]']:
-    df[col] = (
-        df[col]
-        .astype(str)
-        .str.strip()
-        .replace(['-999', '-9999', '-99', '--', ''], np.nan)
-    )
+for col in ['Air_pCO2', 'Sea_pCO2']:
+
+    # Convert to numeric
     df[col] = pd.to_numeric(df[col], errors='coerce')
 
-# --------------------------------------------------
-# 5. Set Date as index
-# --------------------------------------------------
-df = df.set_index('Date')
-df = df.sort_index()
+    # Remove negative and zero values
+    df.loc[df[col] <= 0, col] = np.nan
+
+    # Apply realistic open-ocean range filter
+    df.loc[df[col] < 250, col] = np.nan
+    df.loc[df[col] > 600, col] = np.nan
 
 # --------------------------------------------------
-# 6. Convert to daily mean
+# 3. REMOVE STATISTICAL OUTLIERS (IQR METHOD)
 # --------------------------------------------------
-daily = df.resample('D').mean()
+def remove_outliers_iqr(data, column):
+    Q1 = data[column].quantile(0.25)
+    Q3 = data[column].quantile(0.75)
+    IQR = Q3 - Q1
+
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+
+    data.loc[(data[column] < lower_bound) |
+             (data[column] > upper_bound), column] = np.nan
+
+    return data
+
+df = remove_outliers_iqr(df, 'Air_pCO2')
+df = remove_outliers_iqr(df, 'Sea_pCO2')
 
 # --------------------------------------------------
-# 7. Calculate ΔpCO2
+# 4. SORT & SET DATE INDEX
 # --------------------------------------------------
-daily['delta_pCO2'] = (
-    daily['pCO2_SW_sat [uatm]'] -
-    daily['pCO2_Air_sat [uatm]']
+df = df.sort_values('Date')
+df.set_index('Date', inplace=True)
+
+# --------------------------------------------------
+# 5. RESAMPLE (Daily or Monthly)
+# --------------------------------------------------
+df_resampled = df.resample('D').mean()
+# df_resampled = df.resample('M').mean()
+# --------------------------------------------------
+# 6. COMPUTE ΔpCO2 (Sea - Air)
+# --------------------------------------------------
+df_resampled['Delta_pCO2'] = (
+    df_resampled['Sea_pCO2'] -
+    df_resampled['Air_pCO2']
 )
-
 # --------------------------------------------------
-# 8. Plot ΔpCO2 time series
+# 7. PLOT ΔpCO2
 # --------------------------------------------------
-plt.figure(figsize=(14,6))
+plt.figure(figsize=(12, 6))
 
-plt.plot(daily.index, daily['delta_pCO2'], label='ΔpCO2 (Sea - Air)')
+plt.plot(df_resampled.index,
+         df_resampled['Delta_pCO2'],
+         color='blue',
+         linewidth=1.5)
+plt.fill_between(df_resampled.index,
+                 df_resampled['Delta_pCO2'],
+                 0,
+                 where=(df_resampled['Delta_pCO2'] > 0),
+                 color='red',
+                 alpha=0.3)
 
-plt.axhline(0, linestyle='--', color='black')  # zero reference line
+plt.fill_between(df_resampled.index,
+                 df_resampled['Delta_pCO2'],
+                 0,
+                 where=(df_resampled['Delta_pCO2'] < 0),
+                 color='red',
+                 alpha=0.3)
 
+# Zero reference line (critical for interpretation)
+plt.axhline(0, linestyle='--',color='black')
+
+plt.title('ΔpCO₂ (Sea − Air)', fontsize=14)
 plt.xlabel('Time')
-plt.ylabel('ΔpCO2 (µatm)')
-plt.title('Air–Sea pCO2 Difference')
-plt.legend()
-
+plt.ylabel('ΔpCO₂ (µatm)')
+plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
+
